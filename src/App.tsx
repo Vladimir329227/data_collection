@@ -3,18 +3,11 @@ import { AliasesTab } from "./components/AliasesTab";
 import { KbInfoModal } from "./components/KbInfoModal";
 import { QaTab } from "./components/QaTab";
 import type { ZodError } from "zod";
-import {
-  envPublicKbUrl,
-  readSavedPublicKbUrl,
-  resolvePublicKbUrl,
-  writeSavedPublicKbUrl,
-} from "./kbPublicConfig";
+import { HARDCODED_REMOTE_KB_URL, normalizePublicKbFetchUrl, resolvePublicKbUrl } from "./kbPublicConfig";
 import { parseKnowledgeBase, safeParseKnowledgeBase, type KnowledgeBase } from "./kbSchema";
 import { downloadJson } from "./kbUtils";
 
 type MainTab = "aliases" | "qa";
-
-const TOKEN_KEY = "kb_upload_token";
 
 function formatZodError(err: ZodError): string {
   const issues = err.issues;
@@ -33,14 +26,9 @@ export default function App() {
   const [jsonText, setJsonText] = useState("");
   const [jsonErr, setJsonErr] = useState<string | null>(null);
 
-  const [uploadToken, setUploadToken] = useState(() =>
-    typeof localStorage !== "undefined" ? localStorage.getItem(TOKEN_KEY) ?? "" : "",
-  );
-  const [uploadMsg, setUploadMsg] = useState<string | null>(null);
+  const [remoteMsg, setRemoteMsg] = useState<string | null>(null);
+  const [uploadToken, setUploadToken] = useState("");
   const [infoOpen, setInfoOpen] = useState(false);
-  const [publicKbUrlDraft, setPublicKbUrlDraft] = useState(() =>
-    typeof localStorage !== "undefined" ? readSavedPublicKbUrl() || envPublicKbUrl() : envPublicKbUrl(),
-  );
   const [kbSourceHint, setKbSourceHint] = useState<string | null>(null);
 
   const bootstrapKb = useCallback((data: KnowledgeBase) => {
@@ -54,18 +42,19 @@ export default function App() {
     let cancelled = false;
 
     async function loadOnce(url: string): Promise<"success" | "invalid" | "fail"> {
+      const fetchUrl = normalizePublicKbFetchUrl(url);
       try {
-        const r = await fetch(url, { mode: "cors" });
+        const r = await fetch(fetchUrl, { mode: "cors" });
         if (!r.ok) return "fail";
         const data: unknown = await r.json();
         const p = safeParseKnowledgeBase(data);
         if (!p.success) {
-          if (!cancelled) setLoadErr(`${url}: ${formatZodError(p.error)}`);
+          if (!cancelled) setLoadErr(`${fetchUrl}: ${formatZodError(p.error)}`);
           return "invalid";
         }
         if (!cancelled) {
           bootstrapKb(p.data);
-          setKbSourceHint(url.startsWith("http") ? "Публичный Blob" : "Локальный public/knowledge_base.json");
+          setKbSourceHint(fetchUrl.startsWith("http") ? "Удалённое хранилище" : "Локальный public/knowledge_base.json");
         }
         return "success";
       } catch {
@@ -76,6 +65,7 @@ export default function App() {
     async function run() {
       setLoadErr(null);
       const primary = resolvePublicKbUrl().trim();
+      const primaryFetch = primary ? normalizePublicKbFetchUrl(primary) : "";
       const urls = primary ? [primary, "/knowledge_base.json"] : ["/knowledge_base.json"];
       for (const url of urls) {
         if (cancelled) return;
@@ -85,7 +75,7 @@ export default function App() {
       if (!cancelled) {
         setLoadErr(
           primary
-            ? `Не удалось загрузить базу с ${primary} и с /knowledge_base.json`
+            ? `Не удалось загрузить базу с ${primaryFetch || primary} и с /knowledge_base.json`
             : "Не удалось загрузить /knowledge_base.json",
         );
       }
@@ -96,10 +86,6 @@ export default function App() {
       cancelled = true;
     };
   }, [bootstrapKb]);
-
-  useEffect(() => {
-    localStorage.setItem(TOKEN_KEY, uploadToken);
-  }, [uploadToken]);
 
   const applyJsonToKb = useCallback((): boolean => {
     try {
@@ -144,43 +130,32 @@ export default function App() {
     r.readAsText(file, "utf-8");
   };
 
-  async function reloadKbFromPublicUrl(url: string): Promise<boolean> {
-    const u = url.trim();
-    if (!u) return false;
+  /** Текущее состояние для выгрузки: в режиме JSON — из редактора после валидации. */
+  function kbPayloadForSave(): KnowledgeBase | null {
+    if (mode !== "json") return kb;
     try {
-      const r = await fetch(u, { mode: "cors" });
-      if (!r.ok) return false;
-      const data: unknown = await r.json();
-      const p = safeParseKnowledgeBase(data);
-      if (!p.success) return false;
-      bootstrapKb(p.data);
-      setKbSourceHint("Публичный Blob");
-      return true;
-    } catch {
-      return false;
+      const raw: unknown = JSON.parse(jsonText);
+      const p = safeParseKnowledgeBase(raw);
+      if (!p.success) {
+        setRemoteMsg(formatZodError(p.error));
+        return null;
+      }
+      setJsonErr(null);
+      setKb(p.data);
+      return p.data;
+    } catch (e: unknown) {
+      setRemoteMsg(e instanceof Error ? e.message : "Неверный JSON");
+      return null;
     }
   }
 
-  async function applyPublicKbUrl() {
-    setUploadMsg(null);
-    const url = publicKbUrlDraft.trim();
-    writeSavedPublicKbUrl(url);
-    if (!url) {
-      setUploadMsg("URL очищен. Перезагрузите страницу — подтянется только /knowledge_base.json.");
-      return;
-    }
-    const ok = await reloadKbFromPublicUrl(url);
-    setUploadMsg(
-      ok ? "База загружена с публичного URL (как при put(..., { access: \"public\" }))." : "Не удалось загрузить JSON по этому URL.",
-    );
-  }
-
-  async function uploadCloud() {
-    if (!kb) return;
-    setUploadMsg(null);
+  async function saveToRemote(): Promise<void> {
+    setRemoteMsg(null);
+    const payload = kbPayloadForSave();
+    if (!payload) return;
     const tok = uploadToken.trim();
     if (!tok) {
-      setUploadMsg("Укажите токен загрузки (совпадает с KB_UPLOAD_TOKEN на Vercel).");
+      setRemoteMsg("Укажите секрет загрузки (переменная KB_UPLOAD_TOKEN на Vercel).");
       return;
     }
     try {
@@ -190,28 +165,41 @@ export default function App() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${tok}`,
         },
-        body: JSON.stringify(kb),
+        body: JSON.stringify(payload),
       });
       const text = await res.text();
       if (!res.ok) {
-        setUploadMsg(`Ошибка ${res.status}: ${text || res.statusText}`);
+        setRemoteMsg(`Ошибка ${res.status}: ${text || res.statusText}`);
         return;
       }
-      let msg = "Файл загружен в Vercel Blob (public).";
-      try {
-        const j = JSON.parse(text) as { url?: string };
-        if (j.url) {
-          msg = `Файл загружен в Vercel Blob: ${j.url}`;
-          writeSavedPublicKbUrl(j.url);
-          setPublicKbUrlDraft(j.url);
-          await reloadKbFromPublicUrl(j.url);
-        }
-      } catch {
-        /* не JSON */
-      }
-      setUploadMsg(msg);
+      setJsonText(JSON.stringify(payload, null, 2));
+      setKbSourceHint("Удалённое хранилище");
+      setRemoteMsg("Сохранено в удалённом хранилище.");
     } catch (e: unknown) {
-      setUploadMsg(e instanceof Error ? e.message : "Сеть");
+      setRemoteMsg(e instanceof Error ? e.message : "Сеть");
+    }
+  }
+
+  async function importFromRemote(): Promise<void> {
+    setRemoteMsg(null);
+    const fetchUrl = normalizePublicKbFetchUrl(HARDCODED_REMOTE_KB_URL);
+    try {
+      const r = await fetch(fetchUrl, { mode: "cors" });
+      if (!r.ok) {
+        setRemoteMsg(`Не удалось загрузить (${r.status}).`);
+        return;
+      }
+      const data: unknown = await r.json();
+      const p = safeParseKnowledgeBase(data);
+      if (!p.success) {
+        setRemoteMsg(formatZodError(p.error));
+        return;
+      }
+      bootstrapKb(p.data);
+      setKbSourceHint("Удалённое хранилище");
+      setRemoteMsg("База обновлена с удалённого хранилища.");
+    } catch {
+      setRemoteMsg("Сеть или CORS: не удалось загрузить JSON.");
     }
   }
 
@@ -221,7 +209,7 @@ export default function App() {
         <h1>База знаний</h1>
         <p className="error">Не удалось загрузить базу: {loadErr}</p>
         <p className="muted">
-          Проверьте публичный URL в блоке Vercel Blob, переменную <code>VITE_PUBLIC_KB_URL</code> или импортируйте JSON с диска.
+          Проверьте доступность удалённого JSON или импортируйте файл с диска.
         </p>
         <label className="btn primary">
           Выбрать файл
@@ -274,7 +262,7 @@ export default function App() {
               }}
             />
           </label>
-          <button type="button" className="btn primary" onClick={() => downloadJson("knowledge_base.json", kb)}>
+          <button type="button" className="btn secondary" onClick={() => downloadJson("knowledge_base.json", kb)}>
             Скачать JSON
           </button>
           <button type="button" className="btn secondary" onClick={() => setInfoOpen(true)}>
@@ -329,60 +317,40 @@ export default function App() {
       )}
 
       <div className="cloudPanel">
-        <h4>Vercel Blob (публичный доступ)</h4>
+        <h4>Файл базы</h4>
         <p className="hint">
-          Загрузка через <code>{`put(path, body, { access: 'public' })`}</code> — JSON доступен по постоянному URL. На
-          сервере: <code>BLOB_READ_WRITE_TOKEN</code>, опционально <code>BLOB_OBJECT_KEY</code> (по умолчанию{" "}
-          <code>articles/knowledge_base.json</code>).
+          Источник в сети задан в коде:{" "}
+          <a href={HARDCODED_REMOTE_KB_URL} target="_blank" rel="noreferrer">
+            открыть JSON
+          </a>
+          . При старте: сначала он, при ошибке — <code>/knowledge_base.json</code> из <code>public/</code>. Выгрузка идёт
+          на Vercel через <code>POST /api/upload-kb</code> (нужен <code>BLOB_READ_WRITE_TOKEN</code> на сервере).
         </p>
         <div className="field">
-          <span className="label">Публичный URL JSON</span>
-          <input
-            type="url"
-            autoComplete="off"
-            value={publicKbUrlDraft}
-            onChange={(e) => setPublicKbUrlDraft(e.target.value)}
-            placeholder="https://….public.blob.vercel-storage.com/articles/knowledge_base.json"
-          />
-        </div>
-        <div className="btnRow">
-          <button type="button" className="btn secondary" onClick={() => void applyPublicKbUrl()}>
-            Сохранить URL и загрузить базу
-          </button>
-        </div>
-        <p className="hint">
-          При открытии приложения порядок такой: сохранённый URL → <code>VITE_PUBLIC_KB_URL</code> при сборке → файл{" "}
-          <code>/knowledge_base.json</code> из <code>public/</code>.
-        </p>
-        <div className="field">
-          <span className="label">Токен загрузки</span>
+          <span className="label">Секрет загрузки</span>
           <input
             type="password"
             autoComplete="off"
             value={uploadToken}
             onChange={(e) => setUploadToken(e.target.value)}
-            placeholder="Bearer-секрет"
+            placeholder="Совпадает с KB_UPLOAD_TOKEN (не сохраняется в браузере)"
           />
         </div>
-        <button type="button" className="btn primary" onClick={uploadCloud}>
-          Отправить в Blob
-        </button>
-        {uploadMsg ? (
-          <p className={uploadMsg.startsWith("Файл") ? "success" : "error"}>
-            {(() => {
-              const blobUrl = uploadMsg.match(/https?:\/\/[^\s]+/)?.[0];
-              if (uploadMsg.startsWith("Файл загружен") && blobUrl) {
-                return (
-                  <>
-                    Файл загружен в Vercel Blob:{" "}
-                    <a href={blobUrl} target="_blank" rel="noreferrer">
-                      открыть JSON
-                    </a>
-                  </>
-                );
-              }
-              return uploadMsg;
-            })()}
+        <div className="btnRow">
+          <button type="button" className="btn primary" onClick={() => void saveToRemote()}>
+            Сохранить
+          </button>
+          <button type="button" className="btn secondary" onClick={() => void importFromRemote()}>
+            Импортировать из удалённого хранилища
+          </button>
+        </div>
+        {remoteMsg ? (
+          <p
+            className={
+              remoteMsg.startsWith("База обновлена") || remoteMsg.startsWith("Сохранено") ? "success" : "error"
+            }
+          >
+            {remoteMsg}
           </p>
         ) : null}
       </div>
