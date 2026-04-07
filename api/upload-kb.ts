@@ -22,7 +22,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     return;
   }
 
-  const objectKey = process.env.BLOB_OBJECT_KEY || "knowledge_base.json";
+  /** Путь в Blob как в примере put('articles/...') — публичный URL будет вести сюда же. */
+  const objectKey = process.env.BLOB_OBJECT_KEY || "articles/knowledge_base.json";
 
   let json: string;
   try {

@@ -31,7 +31,18 @@ npm run preview
 |------------|------------|
 | `BLOB_READ_WRITE_TOKEN` | Обычно подставляется автоматически при подключении Blob к проекту; для `vercel dev` выполните `vercel env pull`. |
 | `KB_UPLOAD_TOKEN` | Ваш секрет для вызова `POST /api/upload-kb` (тот же токен вводится в UI редактора). |
-| `BLOB_OBJECT_KEY` | Опционально: имя объекта в Blob (по умолчанию `knowledge_base.json`). |
+| `BLOB_OBJECT_KEY` | Опционально: путь объекта в Blob (по умолчанию `articles/knowledge_base.json`, как в примере `put('articles/...')`). |
+| `VITE_PUBLIC_KB_URL` | Опционально: **публичный** URL загруженного JSON (`access: 'public'`). После сборки приложение сначала пытается загрузить базу отсюда. См. `.env.example`. |
+
+### Публичная «база» на Blob
+
+Объект кладётся через `put(..., { access: 'public' })` — по ссылке JSON можно читать из браузера (в том числе этим редактором). Порядок загрузки при открытии сайта:
+
+1. URL из поля «Публичный URL» в UI (сохраняется в `localStorage`, ключ `kb_public_url`);
+2. иначе `VITE_PUBLIC_KB_URL` из переменных окружения при **сборке**;
+3. иначе файл `public/knowledge_base.json`.
+
+После успешной отправки в Blob редактор сам подставляет возвращённый `url` и обновляет данные.
 
 Загрузка с локального `npm run dev` **не** попадёт в `/api/*` (Vite). Для проверки API используйте деплой на Vercel или `vercel dev` из каталога `data_collection` (с подтянутым `BLOB_READ_WRITE_TOKEN`).
 
@@ -46,6 +57,7 @@ npm run preview
 
 - Не коммитьте `KB_UPLOAD_TOKEN` и `BLOB_READ_WRITE_TOKEN` в репозиторий.
 - Токен в браузере хранится в `localStorage` (ключ `kb_upload_token`) для удобства; на общих машинах вводите его заново и не сохраняйте.
+- Публичный URL Blob — тоже в `localStorage` (`kb_public_url`); по этой ссылке **любой** может скачать JSON. Не публикуйте её там, где нельзя светить базу знаний.
 
 ## Ограничения
 

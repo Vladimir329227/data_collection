@@ -3,6 +3,12 @@ import { AliasesTab } from "./components/AliasesTab";
 import { KbInfoModal } from "./components/KbInfoModal";
 import { QaTab } from "./components/QaTab";
 import type { ZodError } from "zod";
+import {
+  envPublicKbUrl,
+  readSavedPublicKbUrl,
+  resolvePublicKbUrl,
+  writeSavedPublicKbUrl,
+} from "./kbPublicConfig";
 import { parseKnowledgeBase, safeParseKnowledgeBase, type KnowledgeBase } from "./kbSchema";
 import { downloadJson } from "./kbUtils";
 
@@ -32,6 +38,10 @@ export default function App() {
   );
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
   const [infoOpen, setInfoOpen] = useState(false);
+  const [publicKbUrlDraft, setPublicKbUrlDraft] = useState(() =>
+    typeof localStorage !== "undefined" ? readSavedPublicKbUrl() || envPublicKbUrl() : envPublicKbUrl(),
+  );
+  const [kbSourceHint, setKbSourceHint] = useState<string | null>(null);
 
   const bootstrapKb = useCallback((data: KnowledgeBase) => {
     setKb(data);
@@ -41,22 +51,50 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    fetch("/knowledge_base.json")
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((data: unknown) => {
+    let cancelled = false;
+
+    async function loadOnce(url: string): Promise<"success" | "invalid" | "fail"> {
+      try {
+        const r = await fetch(url, { mode: "cors" });
+        if (!r.ok) return "fail";
+        const data: unknown = await r.json();
         const p = safeParseKnowledgeBase(data);
         if (!p.success) {
-          setLoadErr(formatZodError(p.error));
-          return;
+          if (!cancelled) setLoadErr(`${url}: ${formatZodError(p.error)}`);
+          return "invalid";
         }
-        bootstrapKb(p.data);
-      })
-      .catch((e: unknown) => {
-        setLoadErr(e instanceof Error ? e.message : "Сеть");
-      });
+        if (!cancelled) {
+          bootstrapKb(p.data);
+          setKbSourceHint(url.startsWith("http") ? "Публичный Blob" : "Локальный public/knowledge_base.json");
+        }
+        return "success";
+      } catch {
+        return "fail";
+      }
+    }
+
+    async function run() {
+      setLoadErr(null);
+      const primary = resolvePublicKbUrl().trim();
+      const urls = primary ? [primary, "/knowledge_base.json"] : ["/knowledge_base.json"];
+      for (const url of urls) {
+        if (cancelled) return;
+        const res = await loadOnce(url);
+        if (res === "success" || res === "invalid") return;
+      }
+      if (!cancelled) {
+        setLoadErr(
+          primary
+            ? `Не удалось загрузить базу с ${primary} и с /knowledge_base.json`
+            : "Не удалось загрузить /knowledge_base.json",
+        );
+      }
+    }
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
   }, [bootstrapKb]);
 
   useEffect(() => {
@@ -106,6 +144,37 @@ export default function App() {
     r.readAsText(file, "utf-8");
   };
 
+  async function reloadKbFromPublicUrl(url: string): Promise<boolean> {
+    const u = url.trim();
+    if (!u) return false;
+    try {
+      const r = await fetch(u, { mode: "cors" });
+      if (!r.ok) return false;
+      const data: unknown = await r.json();
+      const p = safeParseKnowledgeBase(data);
+      if (!p.success) return false;
+      bootstrapKb(p.data);
+      setKbSourceHint("Публичный Blob");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function applyPublicKbUrl() {
+    setUploadMsg(null);
+    const url = publicKbUrlDraft.trim();
+    writeSavedPublicKbUrl(url);
+    if (!url) {
+      setUploadMsg("URL очищен. Перезагрузите страницу — подтянется только /knowledge_base.json.");
+      return;
+    }
+    const ok = await reloadKbFromPublicUrl(url);
+    setUploadMsg(
+      ok ? "База загружена с публичного URL (как при put(..., { access: \"public\" }))." : "Не удалось загрузить JSON по этому URL.",
+    );
+  }
+
   async function uploadCloud() {
     if (!kb) return;
     setUploadMsg(null);
@@ -128,10 +197,15 @@ export default function App() {
         setUploadMsg(`Ошибка ${res.status}: ${text || res.statusText}`);
         return;
       }
-      let msg = "Файл загружен в Vercel Blob.";
+      let msg = "Файл загружен в Vercel Blob (public).";
       try {
         const j = JSON.parse(text) as { url?: string };
-        if (j.url) msg = `Файл загружен в Vercel Blob: ${j.url}`;
+        if (j.url) {
+          msg = `Файл загружен в Vercel Blob: ${j.url}`;
+          writeSavedPublicKbUrl(j.url);
+          setPublicKbUrlDraft(j.url);
+          await reloadKbFromPublicUrl(j.url);
+        }
       } catch {
         /* не JSON */
       }
@@ -145,8 +219,10 @@ export default function App() {
     return (
       <div className="app">
         <h1>База знаний</h1>
-        <p className="error">Не удалось загрузить /knowledge_base.json: {loadErr}</p>
-        <p className="muted">Импортируйте JSON с диска (корень репозитория или выгрузка).</p>
+        <p className="error">Не удалось загрузить базу: {loadErr}</p>
+        <p className="muted">
+          Проверьте публичный URL в блоке Vercel Blob, переменную <code>VITE_PUBLIC_KB_URL</code> или импортируйте JSON с диска.
+        </p>
         <label className="btn primary">
           Выбрать файл
           <input
@@ -178,6 +254,11 @@ export default function App() {
         <div>
           <h1>Редактор базы знаний</h1>
           <p className="subtitle">knowledge_base.json — совместимость с RAG-пайплайном проекта</p>
+          {kbSourceHint ? (
+            <p className="subtitle kbSourceTag">
+              Источник данных: <strong>{kbSourceHint}</strong>
+            </p>
+          ) : null}
         </div>
         <div className="toolbar">
           <label className="btn secondary">
@@ -248,11 +329,30 @@ export default function App() {
       )}
 
       <div className="cloudPanel">
-        <h4>Vercel Blob</h4>
+        <h4>Vercel Blob (публичный доступ)</h4>
         <p className="hint">
-          Работает на деплое Vercel или <code>vercel dev</code>. В проекте нужен Blob Store (Storage) — появится{" "}
-          <code>BLOB_READ_WRITE_TOKEN</code>. Свой секрет для кнопки ниже: <code>KB_UPLOAD_TOKEN</code> в переменных
-          окружения.
+          Загрузка через <code>{`put(path, body, { access: 'public' })`}</code> — JSON доступен по постоянному URL. На
+          сервере: <code>BLOB_READ_WRITE_TOKEN</code>, опционально <code>BLOB_OBJECT_KEY</code> (по умолчанию{" "}
+          <code>articles/knowledge_base.json</code>).
+        </p>
+        <div className="field">
+          <span className="label">Публичный URL JSON</span>
+          <input
+            type="url"
+            autoComplete="off"
+            value={publicKbUrlDraft}
+            onChange={(e) => setPublicKbUrlDraft(e.target.value)}
+            placeholder="https://….public.blob.vercel-storage.com/articles/knowledge_base.json"
+          />
+        </div>
+        <div className="btnRow">
+          <button type="button" className="btn secondary" onClick={() => void applyPublicKbUrl()}>
+            Сохранить URL и загрузить базу
+          </button>
+        </div>
+        <p className="hint">
+          При открытии приложения порядок такой: сохранённый URL → <code>VITE_PUBLIC_KB_URL</code> при сборке → файл{" "}
+          <code>/knowledge_base.json</code> из <code>public/</code>.
         </p>
         <div className="field">
           <span className="label">Токен загрузки</span>
