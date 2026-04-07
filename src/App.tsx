@@ -27,7 +27,6 @@ export default function App() {
   const [jsonErr, setJsonErr] = useState<string | null>(null);
 
   const [remoteMsg, setRemoteMsg] = useState<string | null>(null);
-  const [uploadToken, setUploadToken] = useState("");
   const [infoOpen, setInfoOpen] = useState(false);
   const [kbSourceHint, setKbSourceHint] = useState<string | null>(null);
 
@@ -153,18 +152,10 @@ export default function App() {
     setRemoteMsg(null);
     const payload = kbPayloadForSave();
     if (!payload) return;
-    const tok = uploadToken.trim();
-    if (!tok) {
-      setRemoteMsg("Укажите секрет загрузки (переменная KB_UPLOAD_TOKEN на Vercel).");
-      return;
-    }
     try {
       const res = await fetch("/api/upload-kb", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${tok}`,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
       const text = await res.text();
@@ -324,18 +315,8 @@ export default function App() {
             открыть JSON
           </a>
           . При старте: сначала он, при ошибке — <code>/knowledge_base.json</code> из <code>public/</code>. Выгрузка идёт
-          на Vercel через <code>POST /api/upload-kb</code> (нужен <code>BLOB_READ_WRITE_TOKEN</code> на сервере).
+          на Vercel через <code>POST /api/upload-kb</code> (на сервере нужен только <code>BLOB_READ_WRITE_TOKEN</code>).
         </p>
-        <div className="field">
-          <span className="label">Секрет загрузки</span>
-          <input
-            type="password"
-            autoComplete="off"
-            value={uploadToken}
-            onChange={(e) => setUploadToken(e.target.value)}
-            placeholder="Совпадает с KB_UPLOAD_TOKEN (не сохраняется в браузере)"
-          />
-        </div>
         <div className="btnRow">
           <button type="button" className="btn primary" onClick={() => void saveToRemote()}>
             Сохранить

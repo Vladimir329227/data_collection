@@ -7,13 +7,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     return;
   }
 
-  const token = process.env.KB_UPLOAD_TOKEN;
-  const auth = req.headers.authorization;
-  if (!token || auth !== `Bearer ${token}`) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
-
   if (!process.env.BLOB_READ_WRITE_TOKEN) {
     res.status(500).json({
       error:
