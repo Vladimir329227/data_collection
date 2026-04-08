@@ -1,7 +1,10 @@
 /** Путь к объекту по умолчанию (совпадает с BLOB_OBJECT_KEY в API). */
 export const DEFAULT_BLOB_JSON_PATH = "/articles/knowledge_base.json";
 
-/** Публичный JSON базы знаний на Vercel Blob (единственный источник для загрузки из сети). */
+/**
+ * Источник по умолчанию: публичный JSON на Vercel Blob (каноническая копия для редактора и RAG).
+ * @see https://vfalbmvkw2zjknly.public.blob.vercel-storage.com/articles/knowledge_base.json
+ */
 export const HARDCODED_REMOTE_KB_URL =
   "https://vfalbmvkw2zjknly.public.blob.vercel-storage.com/articles/knowledge_base.json";
 

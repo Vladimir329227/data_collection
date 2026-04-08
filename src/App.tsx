@@ -43,7 +43,10 @@ export default function App() {
     async function loadOnce(url: string): Promise<"success" | "invalid" | "fail"> {
       const fetchUrl = normalizePublicKbFetchUrl(url);
       try {
-        const r = await fetch(fetchUrl, { mode: "cors" });
+        const r = await fetch(fetchUrl, {
+          mode: "cors",
+          cache: fetchUrl.startsWith("http") ? "no-store" : "default",
+        });
         if (!r.ok) return "fail";
         const data: unknown = await r.json();
         const p = safeParseKnowledgeBase(data);
@@ -65,7 +68,12 @@ export default function App() {
       setLoadErr(null);
       const primary = resolvePublicKbUrl().trim();
       const primaryFetch = primary ? normalizePublicKbFetchUrl(primary) : "";
-      const urls = primary ? [primary, "/knowledge_base.json"] : ["/knowledge_base.json"];
+      /** В production только Blob; в dev — запасной public/knowledge_base.json для офлайна. */
+      const urls = primary
+        ? import.meta.env.PROD
+          ? [primary]
+          : [primary, "/knowledge_base.json"]
+        : ["/knowledge_base.json"];
       for (const url of urls) {
         if (cancelled) return;
         const res = await loadOnce(url);
@@ -74,7 +82,9 @@ export default function App() {
       if (!cancelled) {
         setLoadErr(
           primary
-            ? `Не удалось загрузить базу с ${primaryFetch || primary} и с /knowledge_base.json`
+            ? import.meta.env.PROD
+              ? `Не удалось загрузить базу с ${primaryFetch || primary}`
+              : `Не удалось загрузить базу с ${primaryFetch || primary} и с /knowledge_base.json`
             : "Не удалось загрузить /knowledge_base.json",
         );
       }
@@ -175,7 +185,7 @@ export default function App() {
     setRemoteMsg(null);
     const fetchUrl = normalizePublicKbFetchUrl(HARDCODED_REMOTE_KB_URL);
     try {
-      const r = await fetch(fetchUrl, { mode: "cors" });
+      const r = await fetch(fetchUrl, { mode: "cors", cache: "no-store" });
       if (!r.ok) {
         setRemoteMsg(`Не удалось загрузить (${r.status}).`);
         return;
@@ -314,8 +324,9 @@ export default function App() {
           <a href={HARDCODED_REMOTE_KB_URL} target="_blank" rel="noreferrer">
             открыть JSON
           </a>
-          . При старте: сначала он, при ошибке — <code>/knowledge_base.json</code> из <code>public/</code>. Выгрузка идёт
-          на Vercel через <code>POST /api/upload-kb</code> (на сервере нужен только <code>BLOB_READ_WRITE_TOKEN</code>).
+          . При старте: сначала он (в production только он; в dev при ошибке — <code>/knowledge_base.json</code> из{" "}
+          <code>public/</code>). Выгрузка идёт на Vercel через <code>POST /api/upload-kb</code> (на сервере нужен только{" "}
+          <code>BLOB_READ_WRITE_TOKEN</code>).
         </p>
         <div className="btnRow">
           <button type="button" className="btn primary" onClick={() => void saveToRemote()}>
